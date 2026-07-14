@@ -256,12 +256,14 @@ def main():
         # Unpack downloads
         DIRECTX = source_tree / 'third_party' / 'microsoft_dxheaders' / 'src'
         ESBUILD = source_tree / 'third_party' / 'devtools-frontend' / 'src' / 'third_party' / 'esbuild'
-        if DIRECTX.exists():
-            shutil.rmtree(DIRECTX)
-            DIRECTX.mkdir()
-        if ESBUILD.exists():
-            shutil.rmtree(ESBUILD)
-            ESBUILD.mkdir()
+        WEBAUTHN = source_tree / 'third_party' / 'microsoft_webauthn' / 'src'
+        # These downloads replace gitlink/output directories wholesale. Clean
+        # every target first so an interrupted build can be resumed without
+        # shutil.move colliding with identical files from the previous run.
+        for output_directory in (DIRECTX, ESBUILD, WEBAUTHN):
+            if output_directory.exists():
+                shutil.rmtree(output_directory)
+                output_directory.mkdir()
         get_logger().info('Unpacking downloads...')
         downloads.unpack_downloads(download_info_win, downloads_cache, None, source_tree, extractors)
 
