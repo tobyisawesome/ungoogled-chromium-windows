@@ -1,3 +1,4 @@
 [submodule "ungoogled-chromium"]
 	path = ungoogled-chromium
-	url = https://github.com/Eloston/ungoogled-chromium.git
+	url = https://github.com/tobyisawesome/ungoogled-chromium.git
+	branch = feature/winui3-shell

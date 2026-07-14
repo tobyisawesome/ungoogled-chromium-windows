@@ -144,11 +144,18 @@ def main():
         '--tarball',
         action='store_true'
     )
+    parser.add_argument(
+        '--build-root',
+        type=Path,
+        default=_ROOT_DIR / 'build',
+        help=('Directory for downloaded sources, caches, and build outputs. '
+              'Default: %(default)s'))
     args = parser.parse_args()
 
     # Set common variables
-    source_tree = _ROOT_DIR / 'build' / 'src'
-    downloads_cache = _ROOT_DIR / 'build' / 'download_cache'
+    build_root = args.build_root.expanduser().resolve()
+    source_tree = build_root / 'src'
+    downloads_cache = build_root / 'download_cache'
 
     if not args.ci or not (source_tree / 'BUILD.gn').exists():
         # Setup environment
@@ -179,7 +186,14 @@ def main():
             downloads.unpack_downloads(download_info, downloads_cache, None, source_tree, extractors)
         else:
             # Clone sources
-            subprocess.run([sys.executable, str(Path('ungoogled-chromium', 'utils', 'clone.py')), '-o', 'build\\src', '-p', 'win32' if args.x86 else 'win-arm64' if args.arm else 'win64'], check=True)
+            subprocess.run([
+                sys.executable,
+                str(_ROOT_DIR / 'ungoogled-chromium' / 'utils' / 'clone.py'),
+                '-o',
+                str(source_tree),
+                '-p',
+                'win32' if args.x86 else 'win-arm64' if args.arm else 'win64'
+            ], check=True)
 
         # Retrieve windows downloads
         get_logger().info('Downloading required files...')
@@ -321,7 +335,10 @@ def main():
         _run_build_process_timeout(*ninja_commandline, timeout=3.5*60*60)
         # package
         os.chdir(_ROOT_DIR)
-        subprocess.run([sys.executable, 'package.py', '--cpu-arch', '32bit' if args.x86 else 'arm' if args.arm else '64bit'])
+        subprocess.run([
+            sys.executable, 'package.py', '--build-root', str(build_root),
+            '--cpu-arch', '32bit' if args.x86 else 'arm' if args.arm else '64bit'
+        ], check=True)
     else:
         _run_build_process(*ninja_commandline)
 

@@ -57,25 +57,34 @@ def main():
         help=('Filter build outputs by a target CPU. '
               'This is the same as the "arch" key in FILES.cfg. '
               'Default (from platform.architecture()): %(default)s'))
+    parser.add_argument(
+        '--build-root',
+        type=Path,
+        default=Path('build'),
+        help=('Directory containing src/out/Default and receiving packages. '
+              'Default: %(default)s'))
     args = parser.parse_args()
 
-    build_outputs = Path('build/src/out/Default')
+    build_root = args.build_root.expanduser().resolve()
+    source_root = build_root / 'src'
+    build_outputs = source_root / 'out' / 'Default'
 
-    shutil.copyfile('build/src/out/Default/mini_installer.exe',
-        'build/ungoogled-chromium_{}-{}.{}_installer_{}.exe'.format(
+    shutil.copyfile(
+        build_outputs / 'mini_installer.exe',
+        build_root / 'ungoogled-chromium_{}-{}.{}_installer_{}.exe'.format(
             get_chromium_version(), _get_release_revision(),
             _get_packaging_revision(), _get_target_cpu(build_outputs)))
 
     timestamp = None
     try:
-        with open('build/src/build/util/LASTCHANGE.committime', 'r') as ct:
+        with open(source_root / 'build' / 'util' / 'LASTCHANGE.committime', 'r') as ct:
             timestamp = int(ct.read())
     except FileNotFoundError:
         pass
 
-    output = Path('build/ungoogled-chromium_{}-{}.{}_windows_{}.zip'.format(
+    output = build_root / 'ungoogled-chromium_{}-{}.{}_windows_{}.zip'.format(
         get_chromium_version(), _get_release_revision(),
-        _get_packaging_revision(), _get_target_cpu(build_outputs)))
+        _get_packaging_revision(), _get_target_cpu(build_outputs))
 
     excluded_files = set([
         Path('mini_installer.exe'),
@@ -84,7 +93,7 @@ def main():
         Path('chrome.packed.7z'),
     ])
     files_generator = filescfg.filescfg_generator(
-        Path('build/src/chrome/tools/build/win/FILES.cfg'),
+        source_root / 'chrome' / 'tools' / 'build' / 'win' / 'FILES.cfg',
         build_outputs, args.cpu_arch, excluded_files)
     filescfg.create_archive(
         files_generator, tuple(), build_outputs, output, timestamp)

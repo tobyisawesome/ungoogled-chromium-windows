@@ -1,6 +1,10 @@
-# ungoogled-chromium-windows
+# Windows Chromium packaging
 
-Windows packaging for [ungoogled-chromium](//github.com/Eloston/ungoogled-chromium).
+Windows packaging for the [Windows Chromium fork](https://github.com/tobyisawesome/ungoogled-chromium/tree/feature/winui3-shell).
+
+The `feature/winui3-shell` branch tracks the WinUI 3 browser-shell work. It keeps
+Chromium's source, download cache, and build products outside this checkout so a
+full build can live on a drive with sufficient free space.
 
 ## Downloads
 
@@ -58,11 +62,12 @@ git clone --recurse-submodules https://github.com/ungoogled-software/ungoogled-c
 cd ungoogled-chromium-windows
 # Replace TAG_OR_BRANCH_HERE with a tag or branch name
 git checkout --recurse-submodules TAG_OR_BRANCH_HERE
-python3 build.py
-python3 package.py
+python3 build.py --build-root F:\WindowsChromiumBuild
+python3 package.py --build-root F:\WindowsChromiumBuild
 ```
 
-A zip archive and an installer will be created under `build`.
+A zip archive and an installer will be created under the selected build root.
+Omit `--build-root` to retain the upstream default of the local `build` folder.
 
 **NOTE**: If the build fails, you must take additional steps before re-running the build:
 
