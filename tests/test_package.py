@@ -62,6 +62,17 @@ class WinuiPayloadManifestTests(unittest.TestCase):
             ),
             windows_package._winui_payload_paths(self.outputs))
 
+    def test_msbuild_utf8_bom_is_accepted(self):
+        self._write_payload('windows_chromium_shell.dll')
+        self.manifest.write_text(
+            'windows_chromium_shell.dll\n', encoding='utf-8-sig')
+        self.assertEqual(
+            (
+                Path('windows_chromium_payload_manifest.txt'),
+                Path('windows_chromium_shell.dll'),
+            ),
+            windows_package._winui_payload_paths(self.outputs))
+
     def test_unsafe_paths_are_rejected(self):
         for entry in ('C:\\payload.dll', '/payload.dll', '..\\payload.dll',
                       'WinUI/../payload.dll'):

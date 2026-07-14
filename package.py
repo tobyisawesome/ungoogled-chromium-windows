@@ -71,7 +71,9 @@ def _winui_payload_paths(build_outputs):
     payload_paths = []
     seen = set()
     try:
-        manifest_lines = manifest_path.read_text(encoding=ENCODING).splitlines()
+        # MSBuild's WriteLinesToFile emits a UTF-8 BOM. utf-8-sig accepts that
+        # output while remaining compatible with hand-authored BOM-less UTF-8.
+        manifest_lines = manifest_path.read_text(encoding='utf-8-sig').splitlines()
     except UnicodeDecodeError as exc:
         raise ValueError(
             '{} must be valid UTF-8: {}'.format(manifest_path, exc)) from exc
