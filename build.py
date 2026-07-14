@@ -236,10 +236,19 @@ def main():
 
         # Prune binaries
         pruning_list = (_ROOT_DIR / 'ungoogled-chromium' / 'pruning.list') if args.tarball else (_ROOT_DIR  / 'pruning.list')
+        pruning_entries = pruning_list.read_text(encoding=ENCODING).splitlines()
+        # Chromium 150's small Windows checkout can omit the generated Node
+        # dependency archive entirely. Keep pruning it when present, but do not
+        # fail a valid checkout when the hook has already removed it.
+        optional_generated_files = {
+            'third_party/node/node_modules/node_modules.tar.gz',
+        }
+        pruning_entries = [
+            entry for entry in pruning_entries
+            if entry not in optional_generated_files or (source_tree / entry).exists()
+        ]
         unremovable_files = prune_binaries.prune_files(
-            source_tree,
-            pruning_list.read_text(encoding=ENCODING).splitlines()
-        )
+            source_tree, pruning_entries)
         if unremovable_files:
             get_logger().error('Files could not be pruned: %s', unremovable_files)
             parser.exit(1)
