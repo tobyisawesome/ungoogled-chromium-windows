@@ -68,10 +68,11 @@ python3 package.py --build-root F:\WindowsChromiumBuild
 
 A zip archive and an installer will be created under the selected build root.
 On Windows, a build root on another drive is exposed to Chromium's MSYS-based
-hooks through the ignored local `build` directory junction. This prevents drive
-paths from being misread as extraction directories while all large files remain
-on the requested drive. Omit `--build-root` to retain the upstream default of
-the local `build` folder.
+hooks through the ignored local `build` directory junction. The clone helper
+then roots gclient at that directory and uses the relative solution name `src`,
+preventing a Windows drive colon from being parsed as a dependency delimiter.
+All large files remain on the requested drive. Omit `--build-root` to retain the
+upstream default of the local `build` folder.
 
 **NOTE**: If the build fails, you must take additional steps before re-running the build:
 
