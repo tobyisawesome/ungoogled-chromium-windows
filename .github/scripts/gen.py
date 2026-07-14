@@ -25,7 +25,7 @@ for c_path, c_name in config:
     for ending in endings:
         lines.append('')
         filename_tag = tag[:-1] + '1'
-        name = f'ungoogled-chromium_{filename_tag}_{ending[0]}_{c_name}.{ending[1]}'
+        name = f'curve-browser_{filename_tag}_{ending[0]}_{c_name}.{ending[1]}'
         lines.append(f'[{name}]')
         lines.append(f'url = https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/{tag}/{name}')
 

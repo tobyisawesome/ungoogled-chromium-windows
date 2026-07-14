@@ -13,9 +13,10 @@ if sys.version_info.major < 3:
     raise RuntimeError('Python 3 is required for this script.')
 
 import argparse
+from itertools import chain
 import os
 import platform
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import subprocess
 
@@ -25,6 +26,115 @@ from _common import ENCODING, get_chromium_version
 sys.path.pop(0)
 
 _ROOT_DIR = Path(__file__).resolve().parent
+_PRODUCT_NAME = 'curve-browser'
+_WINUI_PAYLOAD_MANIFEST = Path('windows_chromium_payload_manifest.txt')
+_PORTABLE_CONFIGURATION = _ROOT_DIR / 'portable.ini'
+
+
+def _artifact_filename(kind, version, release_revision, packaging_revision, target_cpu):
+    """Return a branded package filename while retaining the upstream layout."""
+    if kind == 'installer':
+        package_kind = 'installer'
+        extension = 'exe'
+    elif kind == 'archive':
+        package_kind = 'windows'
+        extension = 'zip'
+    else:
+        raise ValueError('Unknown package kind: {}'.format(kind))
+    return '{}_{}-{}.{}_{}_{}.{}'.format(
+        _PRODUCT_NAME, version, release_revision, packaging_revision,
+        package_kind, target_cpu, extension)
+
+
+def _manifest_error(manifest_path, line_number, message):
+    return ValueError('{}:{}: {}'.format(manifest_path, line_number, message))
+
+
+def _winui_payload_paths(build_outputs):
+    """Return archive-relative WinUI payload paths from the generated manifest.
+
+    The manifest lives in the Chromium output root and contains one relative
+    Windows or POSIX path per non-comment line. The manifest itself is retained
+    in the portable archive so a packaged build remains auditable.
+    """
+    manifest_path = build_outputs / _WINUI_PAYLOAD_MANIFEST
+    if not os.path.lexists(manifest_path):
+        print(
+            'WinUI payload manifest not found at {}; packaging the pristine '
+            'Chromium baseline without a WinUI payload.'.format(manifest_path),
+            file=sys.stderr)
+        return tuple()
+    if not manifest_path.is_file():
+        raise ValueError('{} must be a regular UTF-8 text file'.format(manifest_path))
+
+    root = build_outputs.resolve()
+    payload_paths = []
+    seen = set()
+    try:
+        manifest_lines = manifest_path.read_text(encoding=ENCODING).splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            '{} must be valid UTF-8: {}'.format(manifest_path, exc)) from exc
+
+    for line_number, raw_line in enumerate(manifest_lines, 1):
+        entry = raw_line.strip()
+        if not entry or entry.startswith('#'):
+            continue
+
+        windows_path = PureWindowsPath(entry)
+        posix_path = PurePosixPath(entry)
+        if (windows_path.is_absolute() or windows_path.drive or windows_path.root or
+                posix_path.is_absolute() or ':' in entry):
+            raise _manifest_error(
+                manifest_path, line_number,
+                'payload path must be relative and drive-free: {!r}'.format(entry))
+
+        normalized = PurePosixPath(entry.replace('\\', '/'))
+        if '..' in normalized.parts:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'payload path may not contain "..": {!r}'.format(entry))
+
+        relative_path = Path(*normalized.parts)
+        if relative_path == _WINUI_PAYLOAD_MANIFEST:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'the payload manifest is included automatically')
+
+        archive_key = relative_path.as_posix().casefold()
+        if archive_key in seen:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'duplicate payload path: {!r}'.format(entry))
+        seen.add(archive_key)
+
+        candidate = (build_outputs / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'payload path escapes the Chromium output root: {!r}'.format(entry)) from exc
+        if not candidate.is_file():
+            raise FileNotFoundError(
+                '{}:{}: listed payload file does not exist: {}'.format(
+                    manifest_path, line_number, candidate))
+        payload_paths.append(relative_path)
+
+    if not payload_paths:
+        raise ValueError('{} does not list any payload files'.format(manifest_path))
+    return (_WINUI_PAYLOAD_MANIFEST, *payload_paths)
+
+
+def _merge_archive_paths(primary_paths, supplemental_paths):
+    """Yield archive paths once, using Windows case-insensitive semantics."""
+    seen = set()
+    for relative_path in chain(primary_paths, supplemental_paths):
+        archive_key = relative_path.as_posix().casefold()
+        if archive_key in seen:
+            continue
+        seen.add(archive_key)
+        yield relative_path
 
 
 def _get_build_root(requested_root):
@@ -97,11 +207,15 @@ def main():
     source_root = build_root / 'src'
     build_outputs = source_root / 'out' / 'Default'
 
+    version = get_chromium_version()
+    release_revision = _get_release_revision()
+    packaging_revision = _get_packaging_revision()
+    target_cpu = _get_target_cpu(build_outputs)
+
     shutil.copyfile(
         build_outputs / 'mini_installer.exe',
-        build_root / 'ungoogled-chromium_{}-{}.{}_installer_{}.exe'.format(
-            get_chromium_version(), _get_release_revision(),
-            _get_packaging_revision(), _get_target_cpu(build_outputs)))
+        build_root / _artifact_filename(
+            'installer', version, release_revision, packaging_revision, target_cpu))
 
     timestamp = None
     try:
@@ -110,9 +224,8 @@ def main():
     except FileNotFoundError:
         pass
 
-    output = build_root / 'ungoogled-chromium_{}-{}.{}_windows_{}.zip'.format(
-        get_chromium_version(), _get_release_revision(),
-        _get_packaging_revision(), _get_target_cpu(build_outputs))
+    output = build_root / _artifact_filename(
+        'archive', version, release_revision, packaging_revision, target_cpu)
 
     excluded_files = set([
         Path('mini_installer.exe'),
@@ -123,8 +236,10 @@ def main():
     files_generator = filescfg.filescfg_generator(
         source_root / 'chrome' / 'tools' / 'build' / 'win' / 'FILES.cfg',
         build_outputs, args.cpu_arch, excluded_files)
+    winui_payload_paths = _winui_payload_paths(build_outputs)
+    archive_paths = _merge_archive_paths(files_generator, winui_payload_paths)
     filescfg.create_archive(
-        files_generator, tuple(), build_outputs, output, timestamp)
+        archive_paths, (_PORTABLE_CONFIGURATION,), build_outputs, output, timestamp)
 
 if __name__ == '__main__':
     main()

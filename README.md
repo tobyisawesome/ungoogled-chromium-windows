@@ -67,6 +67,21 @@ python3 package.py --build-root F:\WindowsChromiumBuild
 ```
 
 A zip archive and an installer will be created under the selected build root.
+Curve Browser package artifacts use the `curve-browser_` filename prefix.
+The ZIP is the portable distribution and contains `portable.ini` at its root;
+`UserDataDirectory=User Data` declares that portable-aware browser builds should
+keep the profile in the application directory. The installer does not contain
+this portable marker and continues to use the normal installed-profile location.
+
+When the WinUI shell is built into Chromium's output directory, its build step
+may create `out/Default/windows_chromium_payload_manifest.txt` beside
+`chrome.exe`. The UTF-8 manifest contains one relative payload file path per
+line; blank lines and lines beginning with `#` are ignored, and both `/` and
+`\\` separators are accepted. `package.py` adds the manifest and every listed
+file to the portable ZIP. Unsafe paths, duplicate entries, or missing files are
+fatal. A missing manifest is intentionally a soft fallback so an otherwise
+pristine Chromium baseline can still be packaged.
+
 On Windows, a build root on another drive is exposed to Chromium's MSYS-based
 hooks through the ignored local `build` directory junction. The clone helper
 then roots gclient at that directory and uses the relative solution name `src`,

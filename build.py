@@ -341,8 +341,12 @@ def main():
         gn_flags += windows_flags
         (source_tree / 'out/Default/args.gn').write_text(gn_flags, encoding=ENCODING)
 
-    # Enter source tree to run build commands
-    os.chdir(source_tree)
+    # Enter the physical source path before running Chromium tools. On Windows
+    # build_root may be exposed through a same-drive junction for MSYS setup,
+    # but Python's path validators reject relative-path calculations when the
+    # current directory keeps the junction's C: spelling while generated files
+    # resolve to the physical F: drive.
+    os.chdir(source_tree.resolve())
 
     if not args.ci or not os.path.exists('out\\Default\\gn.exe'):
         # Run GN bootstrap
