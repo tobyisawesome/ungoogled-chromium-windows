@@ -17,11 +17,39 @@ import os
 import platform
 from pathlib import Path
 import shutil
+import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'ungoogled-chromium' / 'utils'))
 import filescfg
 from _common import ENCODING, get_chromium_version
 sys.path.pop(0)
+
+_ROOT_DIR = Path(__file__).resolve().parent
+
+
+def _get_build_root(requested_root):
+    requested_root = requested_root.expanduser()
+    if not requested_root.is_absolute():
+        requested_root = _ROOT_DIR / requested_root
+    target = requested_root.resolve()
+    if os.name != 'nt' or target.drive.casefold() == _ROOT_DIR.drive.casefold():
+        return target
+
+    alias = _ROOT_DIR / 'build'
+    target.mkdir(parents=True, exist_ok=True)
+    if alias.exists():
+        if alias.resolve() != target:
+            raise RuntimeError(
+                'The local build alias already points somewhere else: {} -> {}'.format(
+                    alias, alias.resolve()))
+    else:
+        subprocess.run(
+            ('cmd.exe', '/d', '/c', 'mklink', '/J', str(alias), str(target)),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding=ENCODING)
+    return alias
 
 def _get_release_revision():
     revision_path = Path(__file__).resolve().parent / 'ungoogled-chromium' / 'revision.txt'
@@ -65,7 +93,7 @@ def main():
               'Default: %(default)s'))
     args = parser.parse_args()
 
-    build_root = args.build_root.expanduser().resolve()
+    build_root = _get_build_root(args.build_root)
     source_root = build_root / 'src'
     build_outputs = source_root / 'out' / 'Default'
 

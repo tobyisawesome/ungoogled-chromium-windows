@@ -30,6 +30,35 @@ _ROOT_DIR = Path(__file__).resolve().parent
 _PATCH_BIN_RELPATH = Path('third_party/git/usr/bin/patch.exe')
 
 
+def _get_build_root(requested_root):
+    """Return a Chromium-tool-safe path while preserving external storage."""
+    requested_root = requested_root.expanduser()
+    if not requested_root.is_absolute():
+        requested_root = _ROOT_DIR / requested_root
+    target = requested_root.resolve()
+
+    # Chromium hooks invoke MSYS tools which can misread a cross-drive path as
+    # a relative extraction path. A same-drive junction avoids that ambiguity.
+    if os.name != 'nt' or target.drive.casefold() == _ROOT_DIR.drive.casefold():
+        return target
+
+    alias = _ROOT_DIR / 'build'
+    target.mkdir(parents=True, exist_ok=True)
+    if alias.exists():
+        if alias.resolve() != target:
+            raise RuntimeError(
+                'The local build alias already points somewhere else: {} -> {}'.format(
+                    alias, alias.resolve()))
+    else:
+        subprocess.run(
+            ('cmd.exe', '/d', '/c', 'mklink', '/J', str(alias), str(target)),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding=ENCODING)
+    return alias
+
+
 def _get_vcvars_path(name='64'):
     """
     Returns the path to the corresponding vcvars*.bat path
@@ -153,7 +182,7 @@ def main():
     args = parser.parse_args()
 
     # Set common variables
-    build_root = args.build_root.expanduser().resolve()
+    build_root = _get_build_root(args.build_root)
     source_tree = build_root / 'src'
     downloads_cache = build_root / 'download_cache'
 
