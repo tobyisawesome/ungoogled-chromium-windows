@@ -28,6 +28,13 @@ sys.path.pop(0)
 
 _ROOT_DIR = Path(__file__).resolve().parent
 _PATCH_BIN_RELPATH = Path('third_party/git/usr/bin/patch.exe')
+_UBLOCK_ORIGIN_VERSION = '1.72.2'
+_UBLOCK_ORIGIN_DOWNLOAD = 'ublock-origin-{}.crx'.format(
+    _UBLOCK_ORIGIN_VERSION)
+_UBLOCK_ORIGIN_SOURCE = Path(
+    'third_party/curve_browser/ublock_origin_source')
+_UBLOCK_ORIGIN_DESTINATION = Path(
+    'chrome/browser/extensions/default_extensions/ublock_origin.crx')
 
 
 def _get_build_root(requested_root):
@@ -257,15 +264,26 @@ def main():
         DIRECTX = source_tree / 'third_party' / 'microsoft_dxheaders' / 'src'
         ESBUILD = source_tree / 'third_party' / 'devtools-frontend' / 'src' / 'third_party' / 'esbuild'
         WEBAUTHN = source_tree / 'third_party' / 'microsoft_webauthn' / 'src'
+        UBLOCK_ORIGIN_SOURCE = source_tree / _UBLOCK_ORIGIN_SOURCE
         # These downloads replace gitlink/output directories wholesale. Clean
         # every target first so an interrupted build can be resumed without
         # shutil.move colliding with identical files from the previous run.
-        for output_directory in (DIRECTX, ESBUILD, WEBAUTHN):
+        for output_directory in (DIRECTX, ESBUILD, WEBAUTHN,
+                                 UBLOCK_ORIGIN_SOURCE):
             if output_directory.exists():
                 shutil.rmtree(output_directory)
                 output_directory.mkdir()
         get_logger().info('Unpacking downloads...')
         downloads.unpack_downloads(download_info_win, downloads_cache, None, source_tree, extractors)
+
+        # Keep the Web Store signature intact: ExternalPrefLoader validates and
+        # installs the CRX from out/Default/extensions for each new profile.
+        # The extracted copy above remains available for license and manifest
+        # auditing, while Chromium's BUILD.gn packages this raw signed file.
+        ublock_origin_destination = source_tree / _UBLOCK_ORIGIN_DESTINATION
+        ublock_origin_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(downloads_cache / _UBLOCK_ORIGIN_DOWNLOAD,
+                        ublock_origin_destination)
 
         # Apply patches
         # First, ungoogled-chromium-patches
