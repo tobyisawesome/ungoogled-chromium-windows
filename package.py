@@ -27,7 +27,7 @@ sys.path.pop(0)
 
 _ROOT_DIR = Path(__file__).resolve().parent
 _PRODUCT_NAME = 'curve-browser'
-_WINUI_PAYLOAD_MANIFEST = Path('windows_chromium_payload_manifest.txt')
+_WINUI_PAYLOAD_MANIFEST = Path('curve_browser_payload_manifest.txt')
 _PORTABLE_CONFIGURATION = _ROOT_DIR / 'portable.ini'
 
 

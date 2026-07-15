@@ -74,7 +74,7 @@ keep the profile in the application directory. The installer does not contain
 this portable marker and continues to use the normal installed-profile location.
 
 When the WinUI shell is built into Chromium's output directory, its build step
-may create `out/Default/windows_chromium_payload_manifest.txt` beside
+may create `out/Default/curve_browser_payload_manifest.txt` beside
 `chrome.exe`. The UTF-8 manifest contains one relative payload file path per
 line; blank lines and lines beginning with `#` are ignored, and both `/` and
 `\\` separators are accepted. `package.py` adds the manifest and every listed

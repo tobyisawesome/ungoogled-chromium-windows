@@ -46,30 +46,30 @@ class WinuiPayloadManifestTests(unittest.TestCase):
         self.assertIn('pristine Chromium baseline', stderr.getvalue())
 
     def test_manifest_and_listed_payload_are_archived(self):
-        self._write_payload('windows_chromium_shell.dll')
+        self._write_payload('curve_browser_shell.dll')
         self._write_payload('WinUI/Microsoft.UI.Xaml.dll')
         self.manifest.write_text(
             '# WinUI self-contained payload\n'
-            'windows_chromium_shell.dll\n'
+            'curve_browser_shell.dll\n'
             'WinUI\\Microsoft.UI.Xaml.dll\n',
             encoding='utf-8')
 
         self.assertEqual(
             (
-                Path('windows_chromium_payload_manifest.txt'),
-                Path('windows_chromium_shell.dll'),
+                Path('curve_browser_payload_manifest.txt'),
+                Path('curve_browser_shell.dll'),
                 Path('WinUI/Microsoft.UI.Xaml.dll'),
             ),
             windows_package._winui_payload_paths(self.outputs))
 
     def test_msbuild_utf8_bom_is_accepted(self):
-        self._write_payload('windows_chromium_shell.dll')
+        self._write_payload('curve_browser_shell.dll')
         self.manifest.write_text(
-            'windows_chromium_shell.dll\n', encoding='utf-8-sig')
+            'curve_browser_shell.dll\n', encoding='utf-8-sig')
         self.assertEqual(
             (
-                Path('windows_chromium_payload_manifest.txt'),
-                Path('windows_chromium_shell.dll'),
+                Path('curve_browser_payload_manifest.txt'),
+                Path('curve_browser_shell.dll'),
             ),
             windows_package._winui_payload_paths(self.outputs))
 
@@ -106,8 +106,8 @@ class WinuiPayloadManifestTests(unittest.TestCase):
             windows_package._winui_payload_paths(self.outputs)
 
     def test_payload_manifest_and_portable_marker_land_in_zip_root(self):
-        self._write_payload('windows_chromium_shell.dll')
-        self.manifest.write_text('windows_chromium_shell.dll\n', encoding='utf-8')
+        self._write_payload('curve_browser_shell.dll')
+        self.manifest.write_text('curve_browser_shell.dll\n', encoding='utf-8')
         archive_path = self.outputs / 'curve-browser_test.zip'
         archive_paths = windows_package._merge_archive_paths(
             (Path('chrome.exe'),), windows_package._winui_payload_paths(self.outputs))
@@ -120,8 +120,8 @@ class WinuiPayloadManifestTests(unittest.TestCase):
             self.assertEqual(
                 {
                     'curve-browser_test/chrome.exe',
-                    'curve-browser_test/windows_chromium_payload_manifest.txt',
-                    'curve-browser_test/windows_chromium_shell.dll',
+                    'curve-browser_test/curve_browser_payload_manifest.txt',
+                    'curve-browser_test/curve_browser_shell.dll',
                     'curve-browser_test/portable.ini',
                 },
                 set(archive.namelist()))
@@ -135,10 +135,10 @@ class ArchivePathTests(unittest.TestCase):
     def test_supplemental_paths_do_not_duplicate_files_cfg_entries(self):
         result = tuple(windows_package._merge_archive_paths(
             (Path('chrome.exe'), Path('WinUI/Microsoft.UI.Xaml.dll')),
-            (Path('winui/microsoft.ui.xaml.dll'), Path('windows_chromium_shell.dll'))))
+            (Path('winui/microsoft.ui.xaml.dll'), Path('curve_browser_shell.dll'))))
         self.assertEqual(
             (Path('chrome.exe'), Path('WinUI/Microsoft.UI.Xaml.dll'),
-             Path('windows_chromium_shell.dll')),
+             Path('curve_browser_shell.dll')),
             result)
 
 
