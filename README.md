@@ -1,6 +1,6 @@
-# Windows Chromium packaging
+# Curve Browser Windows packaging
 
-Windows packaging for the [Windows Chromium fork](https://github.com/tobyisawesome/ungoogled-chromium/tree/feature/winui3-shell).
+Windows packaging for [Curve Browser](https://github.com/tobyisawesome/ungoogled-chromium/tree/feature/winui3-shell).
 
 The `feature/winui3-shell` branch tracks the WinUI 3 browser-shell work. It keeps
 Chromium's source, download cache, and build products outside this checkout so a
@@ -73,14 +73,14 @@ The ZIP is the portable distribution and contains `portable.ini` at its root;
 keep the profile in the application directory. The installer does not contain
 this portable marker and continues to use the normal installed-profile location.
 
-When the WinUI shell is built into Chromium's output directory, its build step
-may create `out/Default/curve_browser_payload_manifest.txt` beside
-`chrome.exe`. The UTF-8 manifest contains one relative payload file path per
-line; blank lines and lines beginning with `#` are ignored, and both `/` and
-`\\` separators are accepted. `package.py` adds the manifest and every listed
-file to the portable ZIP. Unsafe paths, duplicate entries, or missing files are
-fatal. A missing manifest is intentionally a soft fallback so an otherwise
-pristine Chromium baseline can still be packaged.
+For x64 builds, `build.py` automatically builds the self-contained WinUI 3
+shell after Chromium and stages its audited runtime payload in `out/Default`.
+The generated `curve_browser_payload_manifest.txt` contains one relative path
+per line, including localized MUI resources and nested WinUI assets;
+`package.py` adds the manifest and every listed file to the portable ZIP.
+Unsafe paths, duplicate entries, or missing files are fatal. Pass
+`--skip-winui-shell` to build and package the pristine stock-shell fallback;
+a missing manifest remains an intentional soft fallback for that case.
 
 On Windows, a build root on another drive is exposed to Chromium's MSYS-based
 hooks through the ignored local `build` directory junction. The clone helper

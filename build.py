@@ -35,6 +35,68 @@ _UBLOCK_ORIGIN_SOURCE = Path(
     'third_party/curve_browser/ublock_origin_source')
 _UBLOCK_ORIGIN_DESTINATION = Path(
     'chrome/browser/extensions/default_extensions/ublock_origin.crx')
+_WINUI_SHELL_PROJECT = (_ROOT_DIR / 'ungoogled-chromium' / 'windows_chromium' /
+                        'shell' / 'WindowsChromiumShell.vcxproj')
+_WINUI_SHELL_OUTPUT = _WINUI_SHELL_PROJECT.parent / 'out' / 'Release' / 'x64'
+_WINUI_PAYLOAD_MANIFEST = Path('curve_browser_payload_manifest.txt')
+
+
+def _winui_payload_paths(shell_output):
+    """Validate and return paths listed by the shell's payload manifest."""
+    shell_output = shell_output.resolve()
+    manifest = shell_output / _WINUI_PAYLOAD_MANIFEST
+    if not manifest.is_file():
+        raise FileNotFoundError(
+            'WinUI payload manifest was not generated: {}'.format(manifest))
+
+    paths = []
+    seen = set()
+    for raw_line in manifest.read_text(encoding='utf-8-sig').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        relative = Path(line.replace('\\', '/'))
+        if relative.is_absolute() or relative == Path('.') or '..' in relative.parts:
+            raise ValueError('Unsafe WinUI payload path: {!r}'.format(line))
+        key = relative.as_posix().casefold()
+        if key in seen:
+            raise ValueError('Duplicate WinUI payload path: {!r}'.format(line))
+        source = shell_output / relative
+        if not source.is_file() or not source.resolve().is_relative_to(shell_output):
+            raise FileNotFoundError(
+                'WinUI payload file is missing or unsafe: {}'.format(source))
+        seen.add(key)
+        paths.append(relative)
+
+    if not paths:
+        raise ValueError('WinUI payload manifest is empty: {}'.format(manifest))
+    return tuple(paths)
+
+
+def _stage_winui_payload(shell_output, build_outputs):
+    """Copy the validated self-contained shell beside Chromium outputs."""
+    shell_output = shell_output.resolve()
+    build_outputs.mkdir(parents=True, exist_ok=True)
+    payload_paths = _winui_payload_paths(shell_output)
+    for relative in payload_paths:
+        destination = build_outputs / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(shell_output / relative, destination)
+    shutil.copy2(shell_output / _WINUI_PAYLOAD_MANIFEST,
+                 build_outputs / _WINUI_PAYLOAD_MANIFEST)
+    return payload_paths
+
+
+def _build_and_stage_winui_shell(source_tree):
+    """Build the x64 WinUI DLL and stage its audited runtime payload."""
+    get_logger().info('Building self-contained Curve Browser WinUI shell...')
+    _run_build_process(
+        'MSBuild.exe', str(_WINUI_SHELL_PROJECT), '/restore', '/m',
+        '/p:Configuration=Release', '/p:Platform=x64')
+    payload_paths = _stage_winui_payload(
+        _WINUI_SHELL_OUTPUT, source_tree / 'out' / 'Default')
+    get_logger().info('Staged %d WinUI payload files into out/Default.',
+                      len(payload_paths))
 
 
 def _get_build_root(requested_root):
@@ -180,6 +242,10 @@ def main():
         '--tarball',
         action='store_true'
     )
+    parser.add_argument(
+        '--skip-winui-shell',
+        action='store_true',
+        help='Build the pristine Chromium fallback without staging WinUI 3')
     parser.add_argument(
         '--build-root',
         type=Path,
@@ -395,6 +461,13 @@ def main():
     # Run ninja
     if args.ci:
         _run_build_process_timeout(*ninja_commandline, timeout=3.5*60*60)
+        if not args.skip_winui_shell:
+            if args.x86 or args.arm:
+                get_logger().warning(
+                    'WinUI shell staging currently targets x64; packaging the '
+                    'stock-shell fallback for this architecture.')
+            else:
+                _build_and_stage_winui_shell(source_tree.resolve())
         # package
         os.chdir(_ROOT_DIR)
         subprocess.run([
@@ -403,6 +476,13 @@ def main():
         ], check=True)
     else:
         _run_build_process(*ninja_commandline)
+        if not args.skip_winui_shell:
+            if args.x86 or args.arm:
+                get_logger().warning(
+                    'WinUI shell staging currently targets x64; leaving the '
+                    'stock-shell fallback enabled for this architecture.')
+            else:
+                _build_and_stage_winui_shell(source_tree.resolve())
 
 
 if __name__ == '__main__':
