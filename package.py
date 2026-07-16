@@ -203,6 +203,10 @@ def main():
         default=Path('build'),
         help=('Directory containing src/out/Default and receiving packages. '
               'Default: %(default)s'))
+    parser.add_argument(
+        '--archive-only',
+        action='store_true',
+        help='Create the portable archive without requiring mini_installer.exe.')
     args = parser.parse_args()
 
     build_root = _get_build_root(args.build_root)
@@ -214,10 +218,12 @@ def main():
     packaging_revision = _get_packaging_revision()
     target_cpu = _get_target_cpu(build_outputs)
 
-    shutil.copyfile(
-        build_outputs / 'mini_installer.exe',
-        build_root / _artifact_filename(
-            'installer', version, release_revision, packaging_revision, target_cpu))
+    if not args.archive_only:
+        shutil.copyfile(
+            build_outputs / 'mini_installer.exe',
+            build_root / _artifact_filename(
+                'installer', version, release_revision, packaging_revision,
+                target_cpu))
 
     timestamp = None
     try:
