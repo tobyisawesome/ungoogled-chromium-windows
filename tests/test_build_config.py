@@ -45,6 +45,9 @@ class BundledUblockOriginTests(unittest.TestCase):
             '"external_version": "{}"'.format(
                 windows_build._UBLOCK_ORIGIN_VERSION), patch_text)
 
+    def test_default_extensions_is_an_explicit_build_target(self):
+        self.assertIn('default_extensions', windows_build._NINJA_TARGETS)
+
 
 class WinuiBuildStagingTests(unittest.TestCase):
 

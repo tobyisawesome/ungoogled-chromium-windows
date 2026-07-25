@@ -39,6 +39,14 @@ _WINUI_SHELL_PROJECT = (_ROOT_DIR / 'ungoogled-chromium' / 'windows_chromium' /
                         'shell' / 'WindowsChromiumShell.vcxproj')
 _WINUI_SHELL_OUTPUT = _WINUI_SHELL_PROJECT.parent / 'out' / 'Release' / 'x64'
 _WINUI_PAYLOAD_MANIFEST = Path('curve_browser_payload_manifest.txt')
+_NINJA_TARGETS = (
+    'chrome',
+    'chromedriver',
+    'mini_installer',
+    # The portable archive consumes this payload directly, while upstream
+    # Chromium otherwise reaches it only through mini_installer.
+    'default_extensions',
+)
 
 
 def _winui_payload_paths(shell_output):
@@ -454,9 +462,7 @@ def main():
         ninja_commandline.append(args.thread_count)
     ninja_commandline.append('-C')
     ninja_commandline.append('out\\Default')
-    ninja_commandline.append('chrome')
-    ninja_commandline.append('chromedriver')
-    ninja_commandline.append('mini_installer')
+    ninja_commandline.extend(_NINJA_TARGETS)
 
     # Run ninja
     if args.ci:

@@ -13,7 +13,9 @@ if sys.version_info.major < 3:
     raise RuntimeError('Python 3 is required for this script.')
 
 import argparse
+import configparser
 from itertools import chain
+import json
 import os
 import platform
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -29,6 +31,33 @@ _ROOT_DIR = Path(__file__).resolve().parent
 _PRODUCT_NAME = 'curve-browser'
 _WINUI_PAYLOAD_MANIFEST = Path('curve_browser_payload_manifest.txt')
 _PORTABLE_CONFIGURATION = _ROOT_DIR / 'portable.ini'
+_UBLOCK_ORIGIN_ID = 'cjpalhdlnbpafiamejdnhcphjbkeiagm'
+_BUNDLED_EXTENSION_PATHS = (
+    Path('extensions/external_extensions.json'),
+    Path('extensions/ublock_origin.crx'),
+)
+
+
+def _portable_user_data_directory():
+    """Read and validate the profile directory declared by portable.ini."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        with _PORTABLE_CONFIGURATION.open(encoding='utf-8') as config_file:
+            parser.read_file(config_file)
+        configured_path = parser['CurveBrowser']['UserDataDirectory'].strip()
+    except (OSError, configparser.Error, KeyError) as exc:
+        raise ValueError(
+            'portable.ini must declare CurveBrowser.UserDataDirectory') from exc
+
+    windows_path = PureWindowsPath(configured_path)
+    if (not configured_path or windows_path.is_absolute() or windows_path.drive or
+            not windows_path.parts or '..' in windows_path.parts):
+        raise ValueError(
+            'portable.ini UserDataDirectory must be a safe relative path')
+    return Path(*windows_path.parts)
+
+
+_PORTABLE_FIRST_RUN = _portable_user_data_directory() / 'First Run'
 
 
 def _artifact_filename(kind, version, release_revision, packaging_revision, target_cpu):
@@ -139,6 +168,57 @@ def _merge_archive_paths(primary_paths, supplemental_paths):
         yield relative_path
 
 
+def _bundled_extension_paths(build_outputs):
+    """Validate and return Curve's required default-extension payload."""
+    for relative_path in _BUNDLED_EXTENSION_PATHS:
+        candidate = build_outputs / relative_path
+        if not candidate.is_file():
+            raise FileNotFoundError(
+                'Required bundled-extension file does not exist: {}'.format(candidate))
+
+    crx_path = build_outputs / _BUNDLED_EXTENSION_PATHS[1]
+    with crx_path.open('rb') as crx_file:
+        crx_header = crx_file.read(8)
+    if (len(crx_header) != 8 or crx_header[:4] != b'Cr24' or
+            int.from_bytes(crx_header[4:], 'little') != 3):
+        raise ValueError(
+            'Bundled uBlock Origin payload is not a CRX3 file: {}'.format(crx_path))
+
+    policy_path = build_outputs / _BUNDLED_EXTENSION_PATHS[0]
+    try:
+        policy_text = policy_path.read_text(encoding='utf-8')
+        # Chromium's generated external-extension policy is JSON with a
+        # comment-only explanatory header. Preserve strict parsing for the
+        # actual object while accepting those full-line comments.
+        policy_text = '\n'.join(
+            line for line in policy_text.splitlines()
+            if not line.lstrip().startswith('//'))
+        policy = json.loads(policy_text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            'Bundled-extension policy is not valid UTF-8 JSON: {}'.format(
+                policy_path)) from exc
+    ublock = policy.get(_UBLOCK_ORIGIN_ID)
+    if not isinstance(ublock, dict) or ublock.get('external_crx') != 'ublock_origin.crx':
+        raise ValueError(
+            'Bundled-extension policy does not install the required uBlock Origin CRX')
+    if not ublock.get('external_version'):
+        raise ValueError('Bundled uBlock Origin policy is missing external_version')
+    return _BUNDLED_EXTENSION_PATHS
+
+
+def _portable_profile_paths(build_outputs):
+    """Stage the first-run sentinel under portable.ini's profile directory."""
+    sentinel = build_outputs / _PORTABLE_FIRST_RUN
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    if sentinel.exists() and (not sentinel.is_file() or sentinel.stat().st_size):
+        raise ValueError(
+            'Portable first-run sentinel must be an empty file: {}'.format(
+                sentinel))
+    sentinel.touch(exist_ok=True)
+    return (_PORTABLE_FIRST_RUN,)
+
+
 def _get_build_root(requested_root):
     requested_root = requested_root.expanduser()
     if not requested_root.is_absolute():
@@ -245,7 +325,12 @@ def main():
         source_root / 'chrome' / 'tools' / 'build' / 'win' / 'FILES.cfg',
         build_outputs, args.cpu_arch, excluded_files)
     winui_payload_paths = _winui_payload_paths(build_outputs)
-    archive_paths = _merge_archive_paths(files_generator, winui_payload_paths)
+    bundled_extension_paths = _bundled_extension_paths(build_outputs)
+    portable_profile_paths = _portable_profile_paths(build_outputs)
+    archive_paths = _merge_archive_paths(
+        files_generator,
+        chain(winui_payload_paths, bundled_extension_paths,
+              portable_profile_paths))
     filescfg.create_archive(
         archive_paths, (_PORTABLE_CONFIGURATION,), build_outputs, output, timestamp)
 
