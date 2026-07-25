@@ -28,6 +28,112 @@ sys.path.pop(0)
 
 _ROOT_DIR = Path(__file__).resolve().parent
 _PATCH_BIN_RELPATH = Path('third_party/git/usr/bin/patch.exe')
+_UBLOCK_ORIGIN_VERSION = '1.72.2'
+_UBLOCK_ORIGIN_DOWNLOAD = 'ublock-origin-{}.crx'.format(
+    _UBLOCK_ORIGIN_VERSION)
+_UBLOCK_ORIGIN_SOURCE = Path(
+    'third_party/curve_browser/ublock_origin_source')
+_UBLOCK_ORIGIN_DESTINATION = Path(
+    'chrome/browser/extensions/default_extensions/ublock_origin.crx')
+_WINUI_SHELL_PROJECT = (_ROOT_DIR / 'ungoogled-chromium' / 'windows_chromium' /
+                        'shell' / 'WindowsChromiumShell.vcxproj')
+_WINUI_SHELL_OUTPUT = _WINUI_SHELL_PROJECT.parent / 'out' / 'Release' / 'x64'
+_WINUI_PAYLOAD_MANIFEST = Path('curve_browser_payload_manifest.txt')
+_NINJA_TARGETS = (
+    'chrome',
+    'chromedriver',
+    'mini_installer',
+    # The portable archive consumes this payload directly, while upstream
+    # Chromium otherwise reaches it only through mini_installer.
+    'default_extensions',
+)
+
+
+def _winui_payload_paths(shell_output):
+    """Validate and return paths listed by the shell's payload manifest."""
+    shell_output = shell_output.resolve()
+    manifest = shell_output / _WINUI_PAYLOAD_MANIFEST
+    if not manifest.is_file():
+        raise FileNotFoundError(
+            'WinUI payload manifest was not generated: {}'.format(manifest))
+
+    paths = []
+    seen = set()
+    for raw_line in manifest.read_text(encoding='utf-8-sig').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        relative = Path(line.replace('\\', '/'))
+        if relative.is_absolute() or relative == Path('.') or '..' in relative.parts:
+            raise ValueError('Unsafe WinUI payload path: {!r}'.format(line))
+        key = relative.as_posix().casefold()
+        if key in seen:
+            raise ValueError('Duplicate WinUI payload path: {!r}'.format(line))
+        source = shell_output / relative
+        if not source.is_file() or not source.resolve().is_relative_to(shell_output):
+            raise FileNotFoundError(
+                'WinUI payload file is missing or unsafe: {}'.format(source))
+        seen.add(key)
+        paths.append(relative)
+
+    if not paths:
+        raise ValueError('WinUI payload manifest is empty: {}'.format(manifest))
+    return tuple(paths)
+
+
+def _stage_winui_payload(shell_output, build_outputs):
+    """Copy the validated self-contained shell beside Chromium outputs."""
+    shell_output = shell_output.resolve()
+    build_outputs.mkdir(parents=True, exist_ok=True)
+    payload_paths = _winui_payload_paths(shell_output)
+    for relative in payload_paths:
+        destination = build_outputs / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(shell_output / relative, destination)
+    shutil.copy2(shell_output / _WINUI_PAYLOAD_MANIFEST,
+                 build_outputs / _WINUI_PAYLOAD_MANIFEST)
+    return payload_paths
+
+
+def _build_and_stage_winui_shell(source_tree):
+    """Build the x64 WinUI DLL and stage its audited runtime payload."""
+    get_logger().info('Building self-contained Curve Browser WinUI shell...')
+    _run_build_process(
+        'MSBuild.exe', str(_WINUI_SHELL_PROJECT), '/restore', '/m',
+        '/p:Configuration=Release', '/p:Platform=x64')
+    payload_paths = _stage_winui_payload(
+        _WINUI_SHELL_OUTPUT, source_tree / 'out' / 'Default')
+    get_logger().info('Staged %d WinUI payload files into out/Default.',
+                      len(payload_paths))
+
+
+def _get_build_root(requested_root):
+    """Return a Chromium-tool-safe path while preserving external storage."""
+    requested_root = requested_root.expanduser()
+    if not requested_root.is_absolute():
+        requested_root = _ROOT_DIR / requested_root
+    target = requested_root.resolve()
+
+    # Chromium hooks invoke MSYS tools which can misread a cross-drive path as
+    # a relative extraction path. A same-drive junction avoids that ambiguity.
+    if os.name != 'nt' or target.drive.casefold() == _ROOT_DIR.drive.casefold():
+        return target
+
+    alias = _ROOT_DIR / 'build'
+    target.mkdir(parents=True, exist_ok=True)
+    if alias.exists():
+        if alias.resolve() != target:
+            raise RuntimeError(
+                'The local build alias already points somewhere else: {} -> {}'.format(
+                    alias, alias.resolve()))
+    else:
+        subprocess.run(
+            ('cmd.exe', '/d', '/c', 'mklink', '/J', str(alias), str(target)),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding=ENCODING)
+    return alias
 
 
 def _get_vcvars_path(name='64'):
@@ -144,11 +250,22 @@ def main():
         '--tarball',
         action='store_true'
     )
+    parser.add_argument(
+        '--skip-winui-shell',
+        action='store_true',
+        help='Build the pristine Chromium fallback without staging WinUI 3')
+    parser.add_argument(
+        '--build-root',
+        type=Path,
+        default=_ROOT_DIR / 'build',
+        help=('Directory for downloaded sources, caches, and build outputs. '
+              'Default: %(default)s'))
     args = parser.parse_args()
 
     # Set common variables
-    source_tree = _ROOT_DIR / 'build' / 'src'
-    downloads_cache = _ROOT_DIR / 'build' / 'download_cache'
+    build_root = _get_build_root(args.build_root)
+    source_tree = build_root / 'src'
+    downloads_cache = build_root / 'download_cache'
 
     if not args.ci or not (source_tree / 'BUILD.gn').exists():
         # Setup environment
@@ -179,7 +296,14 @@ def main():
             downloads.unpack_downloads(download_info, downloads_cache, None, source_tree, extractors)
         else:
             # Clone sources
-            subprocess.run([sys.executable, str(Path('ungoogled-chromium', 'utils', 'clone.py')), '-o', 'build\\src', '-p', 'win32' if args.x86 else 'win-arm64' if args.arm else 'win64'], check=True)
+            subprocess.run([
+                sys.executable,
+                str(_ROOT_DIR / 'ungoogled-chromium' / 'utils' / 'clone.py'),
+                '-o',
+                str(source_tree),
+                '-p',
+                'win32' if args.x86 else 'win-arm64' if args.arm else 'win64'
+            ], check=True)
 
         # Retrieve windows downloads
         get_logger().info('Downloading required files...')
@@ -193,10 +317,19 @@ def main():
 
         # Prune binaries
         pruning_list = (_ROOT_DIR / 'ungoogled-chromium' / 'pruning.list') if args.tarball else (_ROOT_DIR  / 'pruning.list')
+        pruning_entries = pruning_list.read_text(encoding=ENCODING).splitlines()
+        # Chromium 150's small Windows checkout can omit the generated Node
+        # dependency archive entirely. Keep pruning it when present, but do not
+        # fail a valid checkout when the hook has already removed it.
+        optional_generated_files = {
+            'third_party/node/node_modules/node_modules.tar.gz',
+        }
+        pruning_entries = [
+            entry for entry in pruning_entries
+            if entry not in optional_generated_files or (source_tree / entry).exists()
+        ]
         unremovable_files = prune_binaries.prune_files(
-            source_tree,
-            pruning_list.read_text(encoding=ENCODING).splitlines()
-        )
+            source_tree, pruning_entries)
         if unremovable_files:
             get_logger().error('Files could not be pruned: %s', unremovable_files)
             parser.exit(1)
@@ -204,14 +337,27 @@ def main():
         # Unpack downloads
         DIRECTX = source_tree / 'third_party' / 'microsoft_dxheaders' / 'src'
         ESBUILD = source_tree / 'third_party' / 'devtools-frontend' / 'src' / 'third_party' / 'esbuild'
-        if DIRECTX.exists():
-            shutil.rmtree(DIRECTX)
-            DIRECTX.mkdir()
-        if ESBUILD.exists():
-            shutil.rmtree(ESBUILD)
-            ESBUILD.mkdir()
+        WEBAUTHN = source_tree / 'third_party' / 'microsoft_webauthn' / 'src'
+        UBLOCK_ORIGIN_SOURCE = source_tree / _UBLOCK_ORIGIN_SOURCE
+        # These downloads replace gitlink/output directories wholesale. Clean
+        # every target first so an interrupted build can be resumed without
+        # shutil.move colliding with identical files from the previous run.
+        for output_directory in (DIRECTX, ESBUILD, WEBAUTHN,
+                                 UBLOCK_ORIGIN_SOURCE):
+            if output_directory.exists():
+                shutil.rmtree(output_directory)
+                output_directory.mkdir()
         get_logger().info('Unpacking downloads...')
         downloads.unpack_downloads(download_info_win, downloads_cache, None, source_tree, extractors)
+
+        # Keep the Web Store signature intact: ExternalPrefLoader validates and
+        # installs the CRX from out/Default/extensions for each new profile.
+        # The extracted copy above remains available for license and manifest
+        # auditing, while Chromium's BUILD.gn packages this raw signed file.
+        ublock_origin_destination = source_tree / _UBLOCK_ORIGIN_DESTINATION
+        ublock_origin_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(downloads_cache / _UBLOCK_ORIGIN_DOWNLOAD,
+                        ublock_origin_destination)
 
         # Apply patches
         # First, ungoogled-chromium-patches
@@ -287,8 +433,12 @@ def main():
         gn_flags += windows_flags
         (source_tree / 'out/Default/args.gn').write_text(gn_flags, encoding=ENCODING)
 
-    # Enter source tree to run build commands
-    os.chdir(source_tree)
+    # Enter the physical source path before running Chromium tools. On Windows
+    # build_root may be exposed through a same-drive junction for MSYS setup,
+    # but Python's path validators reject relative-path calculations when the
+    # current directory keeps the junction's C: spelling while generated files
+    # resolve to the physical F: drive.
+    os.chdir(source_tree.resolve())
 
     if not args.ci or not os.path.exists('out\\Default\\gn.exe'):
         # Run GN bootstrap
@@ -312,18 +462,33 @@ def main():
         ninja_commandline.append(args.thread_count)
     ninja_commandline.append('-C')
     ninja_commandline.append('out\\Default')
-    ninja_commandline.append('chrome')
-    ninja_commandline.append('chromedriver')
-    ninja_commandline.append('mini_installer')
+    ninja_commandline.extend(_NINJA_TARGETS)
 
     # Run ninja
     if args.ci:
         _run_build_process_timeout(*ninja_commandline, timeout=3.5*60*60)
+        if not args.skip_winui_shell:
+            if args.x86 or args.arm:
+                get_logger().warning(
+                    'WinUI shell staging currently targets x64; packaging the '
+                    'stock-shell fallback for this architecture.')
+            else:
+                _build_and_stage_winui_shell(source_tree.resolve())
         # package
         os.chdir(_ROOT_DIR)
-        subprocess.run([sys.executable, 'package.py', '--cpu-arch', '32bit' if args.x86 else 'arm' if args.arm else '64bit'])
+        subprocess.run([
+            sys.executable, 'package.py', '--build-root', str(build_root),
+            '--cpu-arch', '32bit' if args.x86 else 'arm' if args.arm else '64bit'
+        ], check=True)
     else:
         _run_build_process(*ninja_commandline)
+        if not args.skip_winui_shell:
+            if args.x86 or args.arm:
+                get_logger().warning(
+                    'WinUI shell staging currently targets x64; leaving the '
+                    'stock-shell fallback enabled for this architecture.')
+            else:
+                _build_and_stage_winui_shell(source_tree.resolve())
 
 
 if __name__ == '__main__':

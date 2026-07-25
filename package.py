@@ -13,15 +13,235 @@ if sys.version_info.major < 3:
     raise RuntimeError('Python 3 is required for this script.')
 
 import argparse
+import configparser
+from itertools import chain
+import json
 import os
 import platform
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
+import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'ungoogled-chromium' / 'utils'))
 import filescfg
 from _common import ENCODING, get_chromium_version
 sys.path.pop(0)
+
+_ROOT_DIR = Path(__file__).resolve().parent
+_PRODUCT_NAME = 'curve-browser'
+_WINUI_PAYLOAD_MANIFEST = Path('curve_browser_payload_manifest.txt')
+_PORTABLE_CONFIGURATION = _ROOT_DIR / 'portable.ini'
+_UBLOCK_ORIGIN_ID = 'cjpalhdlnbpafiamejdnhcphjbkeiagm'
+_BUNDLED_EXTENSION_PATHS = (
+    Path('extensions/external_extensions.json'),
+    Path('extensions/ublock_origin.crx'),
+)
+
+
+def _portable_user_data_directory():
+    """Read and validate the profile directory declared by portable.ini."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        with _PORTABLE_CONFIGURATION.open(encoding='utf-8') as config_file:
+            parser.read_file(config_file)
+        configured_path = parser['CurveBrowser']['UserDataDirectory'].strip()
+    except (OSError, configparser.Error, KeyError) as exc:
+        raise ValueError(
+            'portable.ini must declare CurveBrowser.UserDataDirectory') from exc
+
+    windows_path = PureWindowsPath(configured_path)
+    if (not configured_path or windows_path.is_absolute() or windows_path.drive or
+            not windows_path.parts or '..' in windows_path.parts):
+        raise ValueError(
+            'portable.ini UserDataDirectory must be a safe relative path')
+    return Path(*windows_path.parts)
+
+
+_PORTABLE_FIRST_RUN = _portable_user_data_directory() / 'First Run'
+
+
+def _artifact_filename(kind, version, release_revision, packaging_revision, target_cpu):
+    """Return a branded package filename while retaining the upstream layout."""
+    if kind == 'installer':
+        package_kind = 'installer'
+        extension = 'exe'
+    elif kind == 'archive':
+        package_kind = 'windows'
+        extension = 'zip'
+    else:
+        raise ValueError('Unknown package kind: {}'.format(kind))
+    return '{}_{}-{}.{}_{}_{}.{}'.format(
+        _PRODUCT_NAME, version, release_revision, packaging_revision,
+        package_kind, target_cpu, extension)
+
+
+def _manifest_error(manifest_path, line_number, message):
+    return ValueError('{}:{}: {}'.format(manifest_path, line_number, message))
+
+
+def _winui_payload_paths(build_outputs):
+    """Return archive-relative WinUI payload paths from the generated manifest.
+
+    The manifest lives in the Chromium output root and contains one relative
+    Windows or POSIX path per non-comment line. The manifest itself is retained
+    in the portable archive so a packaged build remains auditable.
+    """
+    manifest_path = build_outputs / _WINUI_PAYLOAD_MANIFEST
+    if not os.path.lexists(manifest_path):
+        print(
+            'WinUI payload manifest not found at {}; packaging the pristine '
+            'Chromium baseline without a WinUI payload.'.format(manifest_path),
+            file=sys.stderr)
+        return tuple()
+    if not manifest_path.is_file():
+        raise ValueError('{} must be a regular UTF-8 text file'.format(manifest_path))
+
+    root = build_outputs.resolve()
+    payload_paths = []
+    seen = set()
+    try:
+        # MSBuild's WriteLinesToFile emits a UTF-8 BOM. utf-8-sig accepts that
+        # output while remaining compatible with hand-authored BOM-less UTF-8.
+        manifest_lines = manifest_path.read_text(encoding='utf-8-sig').splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            '{} must be valid UTF-8: {}'.format(manifest_path, exc)) from exc
+
+    for line_number, raw_line in enumerate(manifest_lines, 1):
+        entry = raw_line.strip()
+        if not entry or entry.startswith('#'):
+            continue
+
+        windows_path = PureWindowsPath(entry)
+        posix_path = PurePosixPath(entry)
+        if (windows_path.is_absolute() or windows_path.drive or windows_path.root or
+                posix_path.is_absolute() or ':' in entry):
+            raise _manifest_error(
+                manifest_path, line_number,
+                'payload path must be relative and drive-free: {!r}'.format(entry))
+
+        normalized = PurePosixPath(entry.replace('\\', '/'))
+        if '..' in normalized.parts:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'payload path may not contain "..": {!r}'.format(entry))
+
+        relative_path = Path(*normalized.parts)
+        if relative_path == _WINUI_PAYLOAD_MANIFEST:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'the payload manifest is included automatically')
+
+        archive_key = relative_path.as_posix().casefold()
+        if archive_key in seen:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'duplicate payload path: {!r}'.format(entry))
+        seen.add(archive_key)
+
+        candidate = (build_outputs / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise _manifest_error(
+                manifest_path, line_number,
+                'payload path escapes the Chromium output root: {!r}'.format(entry)) from exc
+        if not candidate.is_file():
+            raise FileNotFoundError(
+                '{}:{}: listed payload file does not exist: {}'.format(
+                    manifest_path, line_number, candidate))
+        payload_paths.append(relative_path)
+
+    if not payload_paths:
+        raise ValueError('{} does not list any payload files'.format(manifest_path))
+    return (_WINUI_PAYLOAD_MANIFEST, *payload_paths)
+
+
+def _merge_archive_paths(primary_paths, supplemental_paths):
+    """Yield archive paths once, using Windows case-insensitive semantics."""
+    seen = set()
+    for relative_path in chain(primary_paths, supplemental_paths):
+        archive_key = relative_path.as_posix().casefold()
+        if archive_key in seen:
+            continue
+        seen.add(archive_key)
+        yield relative_path
+
+
+def _bundled_extension_paths(build_outputs):
+    """Validate and return Curve's required default-extension payload."""
+    for relative_path in _BUNDLED_EXTENSION_PATHS:
+        candidate = build_outputs / relative_path
+        if not candidate.is_file():
+            raise FileNotFoundError(
+                'Required bundled-extension file does not exist: {}'.format(candidate))
+
+    crx_path = build_outputs / _BUNDLED_EXTENSION_PATHS[1]
+    with crx_path.open('rb') as crx_file:
+        crx_header = crx_file.read(8)
+    if (len(crx_header) != 8 or crx_header[:4] != b'Cr24' or
+            int.from_bytes(crx_header[4:], 'little') != 3):
+        raise ValueError(
+            'Bundled uBlock Origin payload is not a CRX3 file: {}'.format(crx_path))
+
+    policy_path = build_outputs / _BUNDLED_EXTENSION_PATHS[0]
+    try:
+        policy_text = policy_path.read_text(encoding='utf-8')
+        # Chromium's generated external-extension policy is JSON with a
+        # comment-only explanatory header. Preserve strict parsing for the
+        # actual object while accepting those full-line comments.
+        policy_text = '\n'.join(
+            line for line in policy_text.splitlines()
+            if not line.lstrip().startswith('//'))
+        policy = json.loads(policy_text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            'Bundled-extension policy is not valid UTF-8 JSON: {}'.format(
+                policy_path)) from exc
+    ublock = policy.get(_UBLOCK_ORIGIN_ID)
+    if not isinstance(ublock, dict) or ublock.get('external_crx') != 'ublock_origin.crx':
+        raise ValueError(
+            'Bundled-extension policy does not install the required uBlock Origin CRX')
+    if not ublock.get('external_version'):
+        raise ValueError('Bundled uBlock Origin policy is missing external_version')
+    return _BUNDLED_EXTENSION_PATHS
+
+
+def _portable_profile_paths(build_outputs):
+    """Stage the first-run sentinel under portable.ini's profile directory."""
+    sentinel = build_outputs / _PORTABLE_FIRST_RUN
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    if sentinel.exists() and (not sentinel.is_file() or sentinel.stat().st_size):
+        raise ValueError(
+            'Portable first-run sentinel must be an empty file: {}'.format(
+                sentinel))
+    sentinel.touch(exist_ok=True)
+    return (_PORTABLE_FIRST_RUN,)
+
+
+def _get_build_root(requested_root):
+    requested_root = requested_root.expanduser()
+    if not requested_root.is_absolute():
+        requested_root = _ROOT_DIR / requested_root
+    target = requested_root.resolve()
+    if os.name != 'nt' or target.drive.casefold() == _ROOT_DIR.drive.casefold():
+        return target
+
+    alias = _ROOT_DIR / 'build'
+    target.mkdir(parents=True, exist_ok=True)
+    if alias.exists():
+        if alias.resolve() != target:
+            raise RuntimeError(
+                'The local build alias already points somewhere else: {} -> {}'.format(
+                    alias, alias.resolve()))
+    else:
+        subprocess.run(
+            ('cmd.exe', '/d', '/c', 'mklink', '/J', str(alias), str(target)),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding=ENCODING)
+    return alias
 
 def _get_release_revision():
     revision_path = Path(__file__).resolve().parent / 'ungoogled-chromium' / 'revision.txt'
@@ -57,25 +277,43 @@ def main():
         help=('Filter build outputs by a target CPU. '
               'This is the same as the "arch" key in FILES.cfg. '
               'Default (from platform.architecture()): %(default)s'))
+    parser.add_argument(
+        '--build-root',
+        type=Path,
+        default=Path('build'),
+        help=('Directory containing src/out/Default and receiving packages. '
+              'Default: %(default)s'))
+    parser.add_argument(
+        '--archive-only',
+        action='store_true',
+        help='Create the portable archive without requiring mini_installer.exe.')
     args = parser.parse_args()
 
-    build_outputs = Path('build/src/out/Default')
+    build_root = _get_build_root(args.build_root)
+    source_root = build_root / 'src'
+    build_outputs = source_root / 'out' / 'Default'
 
-    shutil.copyfile('build/src/out/Default/mini_installer.exe',
-        'build/ungoogled-chromium_{}-{}.{}_installer_{}.exe'.format(
-            get_chromium_version(), _get_release_revision(),
-            _get_packaging_revision(), _get_target_cpu(build_outputs)))
+    version = get_chromium_version()
+    release_revision = _get_release_revision()
+    packaging_revision = _get_packaging_revision()
+    target_cpu = _get_target_cpu(build_outputs)
+
+    if not args.archive_only:
+        shutil.copyfile(
+            build_outputs / 'mini_installer.exe',
+            build_root / _artifact_filename(
+                'installer', version, release_revision, packaging_revision,
+                target_cpu))
 
     timestamp = None
     try:
-        with open('build/src/build/util/LASTCHANGE.committime', 'r') as ct:
+        with open(source_root / 'build' / 'util' / 'LASTCHANGE.committime', 'r') as ct:
             timestamp = int(ct.read())
     except FileNotFoundError:
         pass
 
-    output = Path('build/ungoogled-chromium_{}-{}.{}_windows_{}.zip'.format(
-        get_chromium_version(), _get_release_revision(),
-        _get_packaging_revision(), _get_target_cpu(build_outputs)))
+    output = build_root / _artifact_filename(
+        'archive', version, release_revision, packaging_revision, target_cpu)
 
     excluded_files = set([
         Path('mini_installer.exe'),
@@ -84,10 +322,17 @@ def main():
         Path('chrome.packed.7z'),
     ])
     files_generator = filescfg.filescfg_generator(
-        Path('build/src/chrome/tools/build/win/FILES.cfg'),
+        source_root / 'chrome' / 'tools' / 'build' / 'win' / 'FILES.cfg',
         build_outputs, args.cpu_arch, excluded_files)
+    winui_payload_paths = _winui_payload_paths(build_outputs)
+    bundled_extension_paths = _bundled_extension_paths(build_outputs)
+    portable_profile_paths = _portable_profile_paths(build_outputs)
+    archive_paths = _merge_archive_paths(
+        files_generator,
+        chain(winui_payload_paths, bundled_extension_paths,
+              portable_profile_paths))
     filescfg.create_archive(
-        files_generator, tuple(), build_outputs, output, timestamp)
+        archive_paths, (_PORTABLE_CONFIGURATION,), build_outputs, output, timestamp)
 
 if __name__ == '__main__':
     main()

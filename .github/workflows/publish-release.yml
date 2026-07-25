@@ -185,7 +185,7 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
           files: |
-            artifacts/**/ungoogled-chromium*
+            artifacts/**/curve-browser*
 
   publish-winget:
     needs:

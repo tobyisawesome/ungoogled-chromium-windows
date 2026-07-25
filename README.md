@@ -1,6 +1,10 @@
-# ungoogled-chromium-windows
+# Curve Browser Windows packaging
 
-Windows packaging for [ungoogled-chromium](//github.com/Eloston/ungoogled-chromium).
+Windows packaging for [Curve Browser](https://github.com/tobyisawesome/ungoogled-chromium/tree/feature/winui3-shell).
+
+The `feature/winui3-shell` branch tracks the WinUI 3 browser-shell work. It keeps
+Chromium's source, download cache, and build products outside this checkout so a
+full build can live on a drive with sufficient free space.
 
 ## Downloads
 
@@ -58,11 +62,32 @@ git clone --recurse-submodules https://github.com/ungoogled-software/ungoogled-c
 cd ungoogled-chromium-windows
 # Replace TAG_OR_BRANCH_HERE with a tag or branch name
 git checkout --recurse-submodules TAG_OR_BRANCH_HERE
-python3 build.py
-python3 package.py
+python3 build.py --build-root F:\WindowsChromiumBuild
+python3 package.py --build-root F:\WindowsChromiumBuild
 ```
 
-A zip archive and an installer will be created under `build`.
+A zip archive and an installer will be created under the selected build root.
+Curve Browser package artifacts use the `curve-browser_` filename prefix.
+The ZIP is the portable distribution and contains `portable.ini` at its root;
+`UserDataDirectory=User Data` declares that portable-aware browser builds should
+keep the profile in the application directory. The installer does not contain
+this portable marker and continues to use the normal installed-profile location.
+
+For x64 builds, `build.py` automatically builds the self-contained WinUI 3
+shell after Chromium and stages its audited runtime payload in `out/Default`.
+The generated `curve_browser_payload_manifest.txt` contains one relative path
+per line, including localized MUI resources and nested WinUI assets;
+`package.py` adds the manifest and every listed file to the portable ZIP.
+Unsafe paths, duplicate entries, or missing files are fatal. Pass
+`--skip-winui-shell` to build and package the pristine stock-shell fallback;
+a missing manifest remains an intentional soft fallback for that case.
+
+On Windows, a build root on another drive is exposed to Chromium's MSYS-based
+hooks through the ignored local `build` directory junction. The clone helper
+then roots gclient at that directory and uses the relative solution name `src`,
+preventing a Windows drive colon from being parsed as a dependency delimiter.
+All large files remain on the requested drive. Omit `--build-root` to retain the
+upstream default of the local `build` folder.
 
 **NOTE**: If the build fails, you must take additional steps before re-running the build:
 
